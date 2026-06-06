@@ -3,6 +3,14 @@
 const GW = 800, GH = 600;
 const SK = 'heli-surv-v1';
 
+function mkStorage() {
+  return window.platanusArcadeStorage || {
+    async get(k) { try { const v = localStorage.getItem(k); return v ? { found:true, value:JSON.parse(v) } : { found:false, value:null }; } catch { return { found:false, value:null }; } },
+    async set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  };
+}
+function fmtTime(t) { const m=Math.floor(t/60),s=Math.floor(t%60); return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
+
 const C = {
   sky: 0x0a1525, skyH: 0x152235,
   ground: 0x1e2e10, groundAlt: 0x253816,
@@ -103,30 +111,39 @@ function nearestEnemy(enemies, x, y) {
 function snd(scene, type) {
   try {
     const ctx = scene.sound?.context || new AudioContext();
-    const o = ctx.createOscillator(), g = ctx.createGain();
-    o.connect(g); g.connect(ctx.destination);
     const t = ctx.currentTime;
+    const tone = (tp, f0, vol, dur, t0, f1) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = tp; o.frequency.setValueAtTime(f0, t0 || t);
+      if (f1 != null) o.frequency.exponentialRampToValueAtTime(f1, (t0 || t) + dur);
+      o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(vol, t0 || t); g.gain.exponentialRampToValueAtTime(0.001, (t0 || t) + dur);
+      o.start(t0 || t); o.stop((t0 || t) + dur + 0.01);
+    };
     if (type === 'shoot') {
-      o.type='square'; o.frequency.setValueAtTime(660,t); o.frequency.exponentialRampToValueAtTime(330,t+0.05);
-      g.gain.setValueAtTime(0.07,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.06); o.start(t); o.stop(t+0.06);
+      tone('square', 880, 0.07, 0.08, t, 220);
     } else if (type === 'missile') {
-      o.type='sawtooth'; o.frequency.setValueAtTime(220,t); o.frequency.exponentialRampToValueAtTime(110,t+0.12);
-      g.gain.setValueAtTime(0.1,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.14); o.start(t); o.stop(t+0.14);
+      tone('sawtooth', 150, 0.07, 0.06, t, 300); tone('sawtooth', 280, 0.07, 0.14, t + 0.06, 70);
     } else if (type === 'boom') {
-      o.type='sawtooth'; o.frequency.setValueAtTime(110,t); o.frequency.exponentialRampToValueAtTime(30,t+0.3);
-      g.gain.setValueAtTime(0.28,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.32); o.start(t); o.stop(t+0.32);
+      const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.35), ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      const ns = ctx.createBufferSource(), ng = ctx.createGain();
+      ns.buffer = buf; ns.connect(ng); ng.connect(ctx.destination);
+      ng.gain.setValueAtTime(0.18, t); ng.gain.exponentialRampToValueAtTime(0.001, t + 0.35); ns.start(t);
+      tone('square', 80, 0.2, 0.28, t, 30);
     } else if (type === 'hit') {
-      o.type='square'; o.frequency.setValueAtTime(200,t); o.frequency.exponentialRampToValueAtTime(80,t+0.15);
-      g.gain.setValueAtTime(0.14,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.18); o.start(t); o.stop(t+0.18);
+      tone('square', 220, 0.1, 0.12, t, 55);
     } else if (type === 'xp') {
-      o.type='sine'; o.frequency.setValueAtTime(880,t); o.frequency.exponentialRampToValueAtTime(1320,t+0.08);
-      g.gain.setValueAtTime(0.05,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.09); o.start(t); o.stop(t+0.09);
+      tone('square', 523, 0.05, 0.06, t); tone('square', 1047, 0.05, 0.06, t + 0.06);
     } else if (type === 'lvl') {
-      o.type='triangle'; o.frequency.setValueAtTime(440,t); o.frequency.linearRampToValueAtTime(880,t+0.3);
-      g.gain.setValueAtTime(0.18,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.35); o.start(t); o.stop(t+0.35);
+      [262, 330, 392, 523].forEach((f, i) => tone('square', f, 0.1, 0.1, t + i * 0.09));
     } else if (type === 'select') {
-      o.type='square'; o.frequency.setValueAtTime(660,t); o.frequency.exponentialRampToValueAtTime(880,t+0.08);
-      g.gain.setValueAtTime(0.09,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.1); o.start(t); o.stop(t+0.1);
+      tone('square', 440, 0.06, 0.05, t); tone('square', 660, 0.06, 0.05, t + 0.05);
+    } else if (type === 'gameover') {
+      [494, 440, 370, 294].forEach((f, i) => tone('square', f, 0.12, 0.22, t + i * 0.22));
+    } else if (type === 'wave') {
+      tone('square', 330, 0.07, 0.06, t); tone('square', 660, 0.07, 0.06, t + 0.09);
     }
   } catch (_) {}
 }
@@ -185,6 +202,28 @@ class MenuScene extends Phaser.Scene {
     this.add.rectangle(GW / 2, GH * 0.75, GW, GH * 0.5, C.ground);
     this.add.rectangle(GW / 2, GH * 0.5, GW, 2, 0x2a4418, 0.5);
 
+    // Starfield
+    const sg = this.add.graphics();
+    for (let i = 0; i < 110; i++) {
+      const sx = Math.random() * GW, sy = Math.random() * GH * 0.5;
+      sg.fillStyle(0xffffff, Math.random() * 0.5 + 0.2);
+      sg.fillRect(sx, sy, Math.random() > 0.82 ? 2 : 1, Math.random() > 0.82 ? 2 : 1);
+    }
+    // Moon (crescent via overlapping circles)
+    const mg = this.add.graphics();
+    mg.fillStyle(0xfff6b0, 0.92); mg.fillCircle(692, 70, 30);
+    mg.fillStyle(C.sky); mg.fillCircle(678, 58, 27);
+    // City-light horizon glow
+    const hg = this.add.graphics();
+    hg.fillGradientStyle(0x0a1525, 0x0a1525, 0xcc4411, 0xcc4411, 0.12);
+    hg.fillRect(0, GH * 0.26, GW, GH * 0.28);
+    // Blinking distant aircraft lights
+    [[180, 95], [445, 128], [618, 62], [88, 172], [310, 45]].forEach(([lx, ly]) => {
+      const lt = this.add.graphics().setPosition(lx, ly);
+      lt.fillStyle(0xff3300); lt.fillCircle(0, 0, 2);
+      this.tweens.add({ targets: lt, alpha: 0.08, duration: Phaser.Math.Between(600, 1300), yoyo: true, repeat: -1, delay: Phaser.Math.Between(0, 700) });
+    });
+
     // City silhouette
     const bg = this.add.graphics();
     bg.fillStyle(0x0a0f1a);
@@ -203,6 +242,12 @@ class MenuScene extends Phaser.Scene {
     }).setOrigin(0.5);
     this.tweens.add({ targets: title, scaleX: 1.03, scaleY: 1.03, alpha: 0.9, duration: 950, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
+    // Leaderboard panel
+    this.add.rectangle(GW/2, 252, 390, 112, 0x050d08, 0.85).setStrokeStyle(1, 0x1a3322);
+    this.add.text(GW/2, 202, '─── HIGH SCORES ───', { fontFamily:'monospace', fontSize:'11px', color:'#1a4422' }).setOrigin(0.5);
+    this._lbTxt = this.add.text(GW/2, 218, '...', { fontFamily:'monospace', fontSize:'11px', color:'#2a5533', align:'center', lineSpacing:3 }).setOrigin(0.5, 0);
+    this._loadLb();
+
     this._rAngle = 0;
     this._heliGfx = this.add.graphics().setPosition(GW / 2, GH * 0.64);
     this._heliFloat = 0;
@@ -214,6 +259,17 @@ class MenuScene extends Phaser.Scene {
     this.tweens.add({ targets: prompt, alpha: 0.15, duration: 620, yoyo: true, repeat: -1 });
 
     startBgMusic(this);
+  }
+
+  async _loadLb() {
+    try {
+      const r = await mkStorage().get(SK);
+      const sc = r.found && Array.isArray(r.value) ? r.value : [];
+      if (!sc.length) { this._lbTxt.setText('no scores yet — be the first!'); return; }
+      this._lbTxt.setText(sc.slice(0,5).map((e,i) =>
+        `${i+1}. ${String(e.score).padStart(6)} pts  ${String(e.kills).padStart(3)}K  ${fmtTime(e.time)}`
+      ).join('\n'));
+    } catch { this._lbTxt.setText(''); }
   }
 
   _drawHeli(rot) {
@@ -283,6 +339,7 @@ class GameScene extends Phaser.Scene {
 
     this._genTextures();
     this._mkWorld();
+    this._mkTerrain();
     this._mkPlayer();
     this._mkGroups();
     this._mkEnemyGfx();
@@ -301,18 +358,48 @@ class GameScene extends Phaser.Scene {
 
   _genTextures() {
     const g = this.make.graphics({ add: false });
-    g.fillStyle(C.ground); g.fillRect(0, 0, 64, 64);
-    g.fillStyle(C.groundAlt);
-    [[5,5,8,20],[22,30,24,8],[40,10,12,16],[10,45,30,6],[48,38,10,18]].forEach(([x,y,w,h]) => g.fillRect(x,y,w,h));
-    g.fillStyle(0x2a3a18, 0.35);
-    [[0,32,64,2],[32,0,2,64]].forEach(([x,y,w,h]) => g.fillRect(x,y,w,h));
-    g.generateTexture('ground', 64, 64);
+    // Two differently sized layers prevent recognizable features lining up often.
+    let seed=9173, rnd=()=>((seed=Math.imul(seed,1664525)+1013904223>>>0)/4294967296);
+    g.fillStyle(C.ground); g.fillRect(0,0,256,256);
+    for(let i=0;i<18;i++) {
+      g.fillStyle(i%3 ? C.groundAlt : 0x17270d,0.12+rnd()*0.18);
+      g.fillEllipse(18+rnd()*220,18+rnd()*220,35+rnd()*85,24+rnd()*60);
+    }
+    for(let i=0;i<150;i++) {
+      const x=rnd()*256,y=rnd()*256,h=2+rnd()*4;
+      g.lineStyle(1,rnd()>.82?0x49682a:rnd()>.5?0x36551f:0x294319,0.35+rnd()*0.4);
+      g.beginPath();g.moveTo(x,y+h);g.lineTo(x+rnd()*3-1.5,y);g.strokePath();
+    }
+    g.generateTexture('ground',256,256);
+    g.clear(); seed=48151;
+    for(let i=0;i<24;i++) {
+      const x=10+rnd()*364,y=10+rnd()*364;
+      if(rnd()>.35) {
+        g.fillStyle(0x426527,0.45+rnd()*0.25);
+        g.fillCircle(x-2,y,2);g.fillCircle(x+2,y,2);g.fillCircle(x,y-2,2);
+        g.fillStyle(0x17270d,0.7);g.fillCircle(x,y,1);
+      } else {
+        g.lineStyle(1,0x9a8a45,0.45);g.beginPath();g.moveTo(x,y+5);g.lineTo(x+rnd()*2,y);g.strokePath();
+      }
+    }
+    g.generateTexture('grassDetail',384,384);
+    // Cloud shadow layer texture
+    g.clear();
+    [[80,90,200,110],[310,170,220,100],[160,330,180,90],[430,90,170,80],[60,400,210,100]].forEach(([cx,cy,cw,ch]) => {
+      g.fillStyle(0x000000, 0.08); g.fillEllipse(cx, cy, cw, ch);
+      g.fillStyle(0x000000, 0.04); g.fillEllipse(cx+30, cy-15, Math.floor(cw*0.6), Math.floor(ch*0.7));
+    });
+    g.generateTexture('clouds', 512, 512);
     g.destroy();
   }
 
   _mkWorld() {
     this.add.rectangle(GW / 2, GH / 2, GW, GH, C.sky).setScrollFactor(0).setDepth(-10);
     this._groundTile = this.add.tileSprite(GW / 2, GH / 2, GW, GH, 'ground').setScrollFactor(0).setDepth(-9);
+    this._grassDetail = this.add.tileSprite(GW/2,GH/2,GW,GH,'grassDetail').setScrollFactor(0).setDepth(-8.8);
+    // Parallax cloud shadow layer (drifts slowly with wind)
+    this._cloudLayer = this.add.tileSprite(GW / 2, GH / 2, GW, GH, 'clouds')
+      .setScrollFactor(0).setDepth(-7).setAlpha(0.85);
     // Decorative road lines
     this._roadGfx = this.add.graphics().setDepth(-8);
     this._roadGfx.lineStyle(2, 0x2a2a1a, 0.35);
@@ -322,8 +409,93 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  _mkTerrain() {
+    // Fixed lake positions (gameplay-relevant — ground units cannot enter)
+    this._lakes = [
+      { x: -440, y: -270, rx: 145, ry:  95, s: 1.2 },
+      { x:  530, y:  230, rx: 160, ry: 110, s: 2.8 },
+      { x: -730, y:  530, rx: 125, ry:  85, s: 0.5 },
+      { x:  830, y: -490, rx: 148, ry: 100, s: 3.7 },
+      { x:  130, y:  730, rx: 152, ry: 102, s: 1.9 },
+      { x: -230, y:  440, rx: 108, ry:  72, s: 4.1 },
+    ];
+
+    // Generates irregular polygon points using layered sine harmonics.
+    // Each unique seed value produces a distinct silhouette.
+    const blob = (cx, cy, rx, ry, s, n = 22) => {
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        const r = 1
+          + Math.sin(a * 2 + s)         * 0.18
+          + Math.sin(a * 3 + s * 1.7)   * 0.11
+          + Math.sin(a * 5 + s * 0.9)   * 0.07
+          + Math.sin(a * 7 + s * 2.3)   * 0.04
+          + Math.sin(a * 11 + s * 1.4)  * 0.02;
+        pts.push({ x: cx + Math.cos(a) * rx * r, y: cy + Math.sin(a) * ry * r });
+      }
+      return pts;
+    };
+
+    const tg = this.add.graphics().setDepth(-6);  // terrain + shores
+    const wg = this.add.graphics().setDepth(-5);  // water (animated)
+
+    // Desert patches — sandy/rocky areas
+    [
+      [-610,-410,145,95, 0.8], [ 710,-320,115,78, 2.1], [-830, 320,135,98, 3.4],
+      [ 430, 615,155,93, 1.5], [-205,-715,105,74, 4.2], [ 915, 425,128,84, 0.3],
+      [-515, 715,143,86, 5.0], [ 215,-515,113,77, 2.7], [1105,-215,133,91, 1.1],
+      [-1015,-115,103,81, 3.8],[ 625,-725,125,86, 4.9], [-315, 925,114,73, 0.6],
+    ].forEach(([x, y, rx, ry, s]) => {
+      // Base sandy shape
+      tg.fillStyle(0x7a6230, 0.58); tg.fillPoints(blob(x, y, rx, ry, s), true);
+      // Lighter inner highlight — slightly offset, different warp
+      tg.fillStyle(0x9e844a, 0.32); tg.fillPoints(blob(x - rx*0.08, y - ry*0.06, rx*0.72, ry*0.68, s + 1.1), true);
+      // Darkest core — adds depth
+      tg.fillStyle(0x5e4a20, 0.20); tg.fillPoints(blob(x + rx*0.05, y + ry*0.04, rx*0.38, ry*0.36, s + 2.3), true);
+      // Scattered pebbles
+      tg.fillStyle(0xb09558, 0.65);
+      for (let i = 0; i < 6; i++)
+        tg.fillCircle(x + (Math.random()-0.5)*rx*2.4, y + (Math.random()-0.5)*ry*2.4, Phaser.Math.Between(2,5));
+      // Dry shrub dots
+      tg.fillStyle(0x4a3a14, 0.50);
+      for (let i = 0; i < 4; i++)
+        tg.fillCircle(x + (Math.random()-0.5)*rx*1.8, y + (Math.random()-0.5)*ry*1.8, Phaser.Math.Between(3,7));
+    });
+
+    // Lakes — shore ring + water body
+    this._lakes.forEach(({ x, y, rx, ry, s }) => {
+      tg.fillStyle(0x263d18, 0.78); tg.fillPoints(blob(x, y, rx+22, ry+18, s + 0.7), true); // outer reeds
+      tg.fillStyle(0x1c3222, 0.58); tg.fillPoints(blob(x, y, rx+11, ry+8,  s + 1.3), true); // dark shore
+      wg.fillStyle(0x0d3d62, 0.92); wg.fillPoints(blob(x, y, rx,    ry,    s),        true); // deep water
+      wg.fillStyle(0x2a6a8c, 0.38); wg.fillEllipse(x - rx*0.22, y - ry*0.28, rx*0.95, ry*0.65); // reflection
+      wg.fillStyle(0x6aaabb, 0.16); wg.fillEllipse(x - rx*0.32, y - ry*0.35, rx*0.38, ry*0.28); // glint
+    });
+
+    // Gentle water shimmer
+    this.tweens.add({ targets: wg, alpha: 0.78, duration: 2200, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+  }
+
+  _inLake(x, y) {
+    return this._lakes.some(({ x: lx, y: ly, rx, ry }) => {
+      const dx = (x - lx) / rx, dy = (y - ly) / ry;
+      return dx*dx + dy*dy < 1;
+    });
+  }
+
+  _blockingLake(x1,y1,x2,y2,pad=18) {
+    for(let i=0;i<this._lakes.length;i++) {
+      const l=this._lakes[i],rx=l.rx+pad,ry=l.ry+pad;
+      const ax=(x1-l.x)/rx,ay=(y1-l.y)/ry,bx=(x2-l.x)/rx,by=(y2-l.y)/ry;
+      const vx=bx-ax,vy=by-ay,q=vx*vx+vy*vy;
+      const t=q?Phaser.Math.Clamp(-(ax*vx+ay*vy)/q,0,1):0;
+      if((ax+vx*t)**2+(ay+vy*t)**2<1) return {l,i,ax,ay,bx,by,rx,ry};
+    }
+    return null;
+  }
+
   _mkPlayer() {
-    this.player = this.add.rectangle(0, 0, 52, 20, C.player).setDepth(10);
+    this.player = this.add.rectangle(0, 0, 52, 20, C.player, 0).setDepth(10);
     this.physics.add.existing(this.player);
     this.player.body.setSize(46, 16).setAllowGravity(false).setCollideWorldBounds(false);
     this._heliGfx = this.add.graphics().setDepth(11);
@@ -427,6 +599,7 @@ class GameScene extends Phaser.Scene {
   }
 
   _showWave(msg) {
+    snd(this, 'wave');
     this._waveTxt.setText(msg).setAlpha(1).setY(95);
     this.tweens.killTweensOf(this._waveTxt);
     this.tweens.add({ targets: this._waveTxt, alpha: 0, y: 72, duration: 2200, delay: 900, ease: 'Quad.easeIn' });
@@ -446,18 +619,23 @@ class GameScene extends Phaser.Scene {
     for (let i = 0; i < wave.cnt; i++) {
       const type = wave.types[Math.floor(Math.random() * wave.types.length)];
       if (type === 'boss' && this.gs.boss) continue;
-      const pos = this._spawnPos();
+      const pos = this._spawnPos(ES[type]?.gr);
       this._spawnEnemy(type, pos.x, pos.y);
     }
   }
 
-  _spawnPos() {
+  _spawnPos(groundOnly) {
     const px = this.player.x, py = this.player.y;
-    const side = Math.floor(Math.random() * 4);
-    if (side === 0) return { x: px + Phaser.Math.Between(-700, 700), y: py - 520 };
-    if (side === 1) return { x: px + Phaser.Math.Between(-700, 700), y: py + 520 };
-    if (side === 2) return { x: px - 620, y: py + Phaser.Math.Between(-440, 440) };
-    return { x: px + 620, y: py + Phaser.Math.Between(-440, 440) };
+    for (let t = 0; t < 8; t++) {
+      const side = Math.floor(Math.random() * 4);
+      let pos;
+      if (side === 0) pos = { x: px + Phaser.Math.Between(-700, 700), y: py - 520 };
+      else if (side === 1) pos = { x: px + Phaser.Math.Between(-700, 700), y: py + 520 };
+      else if (side === 2) pos = { x: px - 620, y: py + Phaser.Math.Between(-440, 440) };
+      else pos = { x: px + 620, y: py + Phaser.Math.Between(-440, 440) };
+      if (!groundOnly || !this._inLake(pos.x, pos.y)) return pos;
+    }
+    return { x: px, y: py - 520 };
   }
 
   update(time, delta) {
@@ -473,8 +651,12 @@ class GameScene extends Phaser.Scene {
     this._updateXPOrbs();
     this._checkWave();
     this._doRegen(dt);
-    this._groundTile.tilePositionX = this.cameras.main.scrollX * 0.9;
-    this._groundTile.tilePositionY = this.cameras.main.scrollY * 0.9;
+    this._groundTile.tilePositionX = this.cameras.main.scrollX;
+    this._groundTile.tilePositionY = this.cameras.main.scrollY;
+    this._grassDetail.tilePositionX = this.cameras.main.scrollX;
+    this._grassDetail.tilePositionY = this.cameras.main.scrollY;
+    this._cloudLayer.tilePositionX = this.cameras.main.scrollX * 0.1 + this.time.now * 0.007;
+    this._cloudLayer.tilePositionY = this.cameras.main.scrollY * 0.1;
     this._updateHud();
   }
 
@@ -579,8 +761,12 @@ class GameScene extends Phaser.Scene {
   }
 
   _dropBomb(lv) {
+    const target = nearestEnemy(this.enemies, this.player.x, this.player.y);
+    const angle = target
+      ? Phaser.Math.Angle.Between(this.player.x, this.player.y, target.x, target.y)
+      : Math.PI / 2;
     const b = this._mkBullet(this.player.x, this.player.y + 15, C.bBomb, 14, 14);
-    b.body.setVelocity(0, 100);
+    b.body.setVelocity(Math.cos(angle) * 160, Math.sin(angle) * 160);
     b._d = { dmg: WD.bomb.d[lv], rng: 300, sx: this.player.x, sy: this.player.y, type: 'bomb', radius: WD.bomb.r[lv] };
     snd(this, 'shoot');
   }
@@ -601,7 +787,7 @@ class GameScene extends Phaser.Scene {
         }
       }
       if (d.type === 'bomb') {
-        if (b.y - d.sy > 180) { this._explode(b.x, b.y, d.dmg, d.radius); b.setActive(false).setVisible(false); continue; }
+        if (Phaser.Math.Distance.Between(b.x, b.y, d.sx, d.sy) > 180) { this._explode(b.x, b.y, d.dmg, d.radius); b.setActive(false).setVisible(false); continue; }
       } else {
         if (Phaser.Math.Distance.Between(b.x, b.y, d.sx, d.sy) > d.rng) { b.setActive(false).setVisible(false); continue; }
       }
@@ -619,9 +805,9 @@ class GameScene extends Phaser.Scene {
       const d = Phaser.Math.Distance.Between(x, y, e.x, e.y);
       if (d < radius) this._dmgEnemy(e, dmg * (1 - d / (radius * 1.5)));
     }
-    const eg = this.add.graphics();
-    eg.fillStyle(C.exp, 0.85); eg.fillCircle(x, y, radius);
-    eg.fillStyle(0xffff00, 0.65); eg.fillCircle(x, y, radius * 0.4);
+    const eg = this.add.graphics().setPosition(x, y);
+    eg.fillStyle(C.exp, 0.85); eg.fillCircle(0, 0, radius);
+    eg.fillStyle(0xffff00, 0.65); eg.fillCircle(0, 0, radius * 0.4);
     this.tweens.add({ targets: eg, alpha: 0, scaleX: 1.5, scaleY: 1.5, duration: 380, onComplete: () => eg.destroy() });
     snd(this, 'boom');
   }
@@ -653,8 +839,33 @@ class GameScene extends Phaser.Scene {
         const dist = Phaser.Math.Distance.Between(e.x, e.y, px, py);
         const minDist = d.fcd > 0 ? d.fr : ES[d.type].sz + 10;
         if (dist > minDist) {
-          const ang = Phaser.Math.Angle.Between(e.x, e.y, px, py);
-          e.body.setVelocity(Math.cos(ang) * d.spd, Math.sin(ang) * d.spd);
+          let vx=px-e.x,vy=py-e.y;
+          if(d.gr) {
+            let hit=d.li>=0?{l:this._lakes[d.li],i:d.li}:this._blockingLake(e.x,e.y,px,py,ES[d.type].sz*.7+10);
+            if(hit) {
+              const l=hit.l,i=hit.i,pad=ES[d.type].sz*.7+10,rx=l.rx+pad,ry=l.ry+pad;
+              const ax=(e.x-l.x)/rx,ay=(e.y-l.y)/ry,bx=(px-l.x)/rx,by=(py-l.y)/ry;
+              const clear=!this._blockingLake(e.x,e.y,px,py,pad);
+              if(d.li<0||d.li===undefined) {
+                d.li=i;d.ls=Phaser.Math.Angle.Wrap(Math.atan2(by,bx)-Math.atan2(ay,ax))>=0?1:-1;
+                d.wx=d.wy=null;
+              }
+              if(clear&&d.wx!=null&&Phaser.Math.Distance.Between(e.x,e.y,d.wx,d.wy)<26) {
+                d.li=-1;d.wx=d.wy=null;
+              } else {
+                if(d.wx==null||Phaser.Math.Distance.Between(e.x,e.y,d.wx,d.wy)<18) {
+                  const ea=Math.atan2(ay,ax),pa=Math.atan2(by,bx),inside=bx*bx+by*by<1;
+                  let wa=ea+d.ls*.32;
+                  if(inside&&Math.abs(Phaser.Math.Angle.Wrap(pa-ea))<.38) wa=pa;
+                  d.wx=l.x+Math.cos(wa)*rx*1.16;d.wy=l.y+Math.sin(wa)*ry*1.16;
+                }
+                vx=d.wx-e.x;vy=d.wy-e.y;
+                if(bx*bx+by*by<1&&Math.hypot(vx,vy)<12) vx=vy=0;
+              }
+            }
+          }
+          const n=Math.hypot(vx,vy)||1;
+          e.body.setVelocity(vx/n*d.spd,vy/n*d.spd);
         } else {
           e.body.setVelocity(0, 0);
         }
@@ -664,6 +875,18 @@ class GameScene extends Phaser.Scene {
       if (d.fcd > 0) {
         const dist = Phaser.Math.Distance.Between(e.x, e.y, px, py);
         if (dist < d.fr && time - d.ft >= d.fcd) { d.ft = time; this._fireEB(e, px, py, d.dmg, d.isBoss ? 2 : 1); }
+      }
+      // Project displaced units onto dry land once; do not fight route steering.
+      if (d.gr) {
+        const lake = this._lakes.find(({ x: lx, y: ly, rx, ry }) => {
+          const dx = (e.x - lx) / rx, dy = (e.y - ly) / ry;
+          return dx*dx + dy*dy < 1;
+        });
+        if (lake) {
+          const ang = Math.atan2(e.y - lake.y, e.x - lake.x);
+          const x=lake.x+Math.cos(ang)*(lake.rx+18),y=lake.y+Math.sin(ang)*(lake.ry+18);
+          e.setPosition(x,y);e.body.reset(x,y);d.wx=d.wy=null;
+        }
       }
       if (d.isBoss) d._ra = (d._ra + 0.09) % (Math.PI * 2);
       if (Math.abs(e.x - px) > 1400 || Math.abs(e.y - py) > 1100) e.setActive(false).setVisible(false);
@@ -788,6 +1011,7 @@ class GameScene extends Phaser.Scene {
     this.gs.xpNext = Math.floor(20 * Math.pow(1.38, this.gs.level - 1));
     snd(this, 'lvl');
     this.gs.paused = true;
+    this.physics.pause();
     this.scene.launch('LevelUp', { gs: this });
   }
 
@@ -823,6 +1047,7 @@ class GameScene extends Phaser.Scene {
 
   _gameOver() {
     this.gs.paused = true;
+    snd(this, 'gameover');
     this.time.delayedCall(500, () => {
       this.scene.start('GameOver', { time: this.gs.elapsed, kills: this.gs.kills, score: this.gs.score, level: this.gs.level, weapons: this.gs.weapons });
     });
@@ -830,6 +1055,7 @@ class GameScene extends Phaser.Scene {
 
   applyUpgrade(key, isPassive) {
     this.gs.paused = false;
+    this.physics.resume();
     this._p = {};
     if (isPassive) {
       const def = PD[key]; if (!def) return;
@@ -942,30 +1168,30 @@ class GameOverScene extends Phaser.Scene {
 
   create() {
     setupCtrl(this);
-    this.add.rectangle(GW / 2, GH / 2, GW, GH, C.dark);
-
+    this.add.rectangle(GW/2, GH/2, GW, GH, C.dark);
     const d = this._d;
-    const m = Math.floor(d.time / 60), s = Math.floor(d.time % 60);
-    const timeStr = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 
-    const title = this.add.text(GW / 2, 55, 'GAME OVER', { fontFamily: 'monospace', fontSize: '46px', color: '#ff2200', fontStyle: 'bold' }).setOrigin(0.5);
-    this.tweens.add({ targets: title, scaleX: 1.04, scaleY: 1.04, duration: 800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    const title = this.add.text(GW/2, 46, 'GAME OVER', { fontFamily:'monospace', fontSize:'44px', color:'#ff2200', fontStyle:'bold' }).setOrigin(0.5);
+    this.tweens.add({ targets:title, scaleX:1.04, scaleY:1.04, duration:800, yoyo:true, repeat:-1, ease:'Sine.easeInOut' });
 
-    const wList = Object.entries(d.weapons || {}).map(([k, w]) => `  ${WD[k]?.n || k} Lv${w.level}`).join('\n');
-    const lines = [
-      `TIME SURVIVED    ${timeStr}`,
-      `ENEMIES KILLED   ${d.kills}`,
-      `SCORE            ${d.score}`,
-      `LEVEL REACHED    ${d.level}`,
-      '',
-      'WEAPONS COLLECTED:',
-      wList || '  none',
-    ].join('\n');
+    this._newRecordTxt = this.add.text(GW/2, 90, '★  NEW HIGH SCORE!  ★', { fontFamily:'monospace', fontSize:'15px', color:'#ffdd00', fontStyle:'bold' }).setOrigin(0.5).setVisible(false);
 
-    this.add.text(GW / 2, 145, lines, { fontFamily: 'monospace', fontSize: '16px', color: '#ccddcc', align: 'left', lineSpacing: 6 }).setOrigin(0.5, 0);
+    const div = this.add.graphics();
+    div.lineStyle(1, 0x1a3322, 0.5);
+    div.beginPath(); div.moveTo(GW/2, 108); div.lineTo(GW/2, GH-62); div.strokePath();
+    div.beginPath(); div.moveTo(40, 108); div.lineTo(GW-40, 108); div.strokePath();
 
-    const btn = this.add.text(GW / 2, GH - 55, 'PRESS START TO PLAY AGAIN', { fontFamily: 'monospace', fontSize: '18px', color: '#00ff88', fontStyle: 'bold' }).setOrigin(0.5);
-    this.tweens.add({ targets: btn, alpha: 0.18, duration: 650, yoyo: true, repeat: -1 });
+    // Left column — this run
+    this.add.text(205, 114, 'THIS RUN', { fontFamily:'monospace', fontSize:'11px', color:'#226644' }).setOrigin(0.5);
+    const wList = Object.entries(d.weapons||{}).map(([k,w])=>`  ${WD[k]?.n||k} Lv${w.level}`).join('\n');
+    this.add.text(55, 132, [`TIME    ${fmtTime(d.time)}`,`KILLS   ${d.kills}`,`SCORE   ${d.score}`,`LEVEL   ${d.level}`,'','WEAPONS:',wList||'  none'].join('\n'), { fontFamily:'monospace', fontSize:'15px', color:'#ccddcc', lineSpacing:5 });
+
+    // Right column — leaderboard
+    this.add.text(600, 114, 'LEADERBOARD', { fontFamily:'monospace', fontSize:'11px', color:'#226644' }).setOrigin(0.5);
+    this._lbTxt = this.add.text(430, 132, 'loading...', { fontFamily:'monospace', fontSize:'13px', color:'#aaffcc', lineSpacing:5 });
+
+    const btn = this.add.text(GW/2, GH-38, 'PRESS START TO PLAY AGAIN', { fontFamily:'monospace', fontSize:'18px', color:'#00ff88', fontStyle:'bold' }).setOrigin(0.5);
+    this.tweens.add({ targets:btn, alpha:0.18, duration:650, yoyo:true, repeat:-1 });
 
     this._saveScore(d);
   }
@@ -976,16 +1202,21 @@ class GameOverScene extends Phaser.Scene {
 
   async _saveScore(d) {
     try {
-      const storage = window.platanusArcadeStorage || {
-        async get(k) { try { const v = localStorage.getItem(k); return v ? { found: true, value: JSON.parse(v) } : { found: false, value: null }; } catch { return { found: false, value: null }; } },
-        async set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { } },
-      };
-      const res = await storage.get(SK);
-      const scores = res.found && Array.isArray(res.value) ? res.value : [];
-      scores.push({ score: d.score, kills: d.kills, time: d.time, level: d.level, date: new Date().toISOString().slice(0, 10) });
-      scores.sort((a, b) => b.score - a.score);
-      await storage.set(SK, scores.slice(0, 10));
-    } catch (_) { }
+      const s = mkStorage();
+      const r = await s.get(SK);
+      const scores = r.found && Array.isArray(r.value) ? r.value : [];
+      const entry = { score:d.score, kills:d.kills, time:d.time, level:d.level, date:new Date().toISOString().slice(0,10) };
+      scores.push(entry);
+      scores.sort((a,b) => b.score - a.score);
+      const top = scores.slice(0,10);
+      await s.set(SK, top);
+      const rank = top.indexOf(entry);
+      if (rank === 0) this._newRecordTxt.setVisible(true);
+      this._lbTxt.setText(top.slice(0,5).map((e,i) => {
+        const mark = e === entry ? '▶' : ' ';
+        return `${mark}${i+1}. ${String(e.score).padStart(6)}  ${String(e.kills).padStart(3)}K  ${fmtTime(e.time)}`;
+      }).join('\n'));
+    } catch (_) {}
   }
 }
 
